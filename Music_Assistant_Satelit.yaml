@@ -1,0 +1,3788 @@
+substitutions:
+  # Change it according to your configuration.
+  name: "assist-halo"                                   # This ESP HA name
+  friendly_name: Assist_halo                            # This ESP HA mediaplayer and fridenly name
+  media_player_name: media_player.assist_halo_2         # This ESP MA mediaplayer name
+  ha_ip: "192.168.0.60"                                 # HA server IP local
+  ha_port: "8123"                                       # HA server port
+  st_ip: 192.168.0.238
+  gw_ip: 192.168.0.1
+  subn: 255.255.255.0
+  dns_ip1: 192.168.0.1
+  dns_ip2: 8.8.8.8   
+  HA_TEMP: sensor.homero_halo_homerseklet               # startup screen temperature sensor entity name from HA
+  HA_HUMI: sensor.homero_halo_paratartalom              # startup screen humidity sensor entity name from HA
+  startup_screen_switch: konnektor_halo                 # startup screen switch entity name from HA --> LAMP ICON
+
+  i2s_lrclk: GPIO06
+  i2s_bclk: GPIO07
+  spk: GPIO08
+  i2s_ws: GPIO03
+  i2s_sck: GPIO02
+  mic: GPIO04
+  ledpin: GPIO48
+  micro_wake_word_model: hey_jarvis               # Other options are: hey_jarvis or alexa
+  timer_alarm_sound: "sounds/timer_finished.wav"  # in the esphome/sounds folder
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  platformio_options:
+    board_build.flash_mode: dio
+    board_build.mcu: esp32s3
+
+  on_boot:
+    priority: -100
+    then:
+      - lvgl.page.show:
+          id: boot_page
+      - logger.log: "Boot page show"
+      - light.turn_on:
+          id: led           
+          red: 0%
+          green: 100%
+          blue: 0%
+          brightness: 60%
+          effect: fast pulse 
+  on_shutdown:
+    then:
+      # Prevent loud noise on software restart
+      #- lambda: id(speaker).mute_speaker();
+
+
+esp32:
+  board: esp32-s3-devkitc-1
+  cpu_frequency: 240MHZ
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
+      CONFIG_AUDIO_BOARD_CUSTOM: "y"
+      CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM: "16"
+      CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM: "512"
+      CONFIG_TCPIP_RECVMBOX_SIZE: "512"
+      CONFIG_TCP_SND_BUF_DEFAULT: "65535"
+      CONFIG_TCP_WND_DEFAULT: "512000"
+      CONFIG_TCP_RECVMBOX_SIZE: "512"
+      
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  id: api_server
+  encryption:
+    key: !secret api_key 
+  
+ 
+
+  on_client_connected:
+    then:
+    - logger.log: "API Connected - start fetching radios"
+    - lvgl.label.update:
+                id: boot_label
+                text: "API connected..."
+      
+    - script.execute: refresh_radios
+    - if:
+        condition:
+          lambda: 'return (0 == client_info.find("Home Assistant "));'
+        then:
+          - lvgl.widget.show: lbl_hastatus
+  on_client_disconnected:
+    - if:
+        condition:
+          lambda: 'return (0 == client_info.find("Home Assistant "));'
+        then:
+          - lvgl.widget.hide: lbl_hastatus
+    - voice_assistant.stop
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+    on_end: 
+      then:
+        - lvgl.page.show: boot_page
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: ${st_ip}
+    gateway: ${gw_ip}
+    subnet: ${subn}
+    dns1: ${dns_ip1}
+    dns2: ${dns_ip2}
+
+  fast_connect: True
+  enable_btm: True
+  enable_rrm: True
+  power_save_mode: NONE
+
+network:
+  enable_ipv6: True
+# ============================
+#   ASSIST_HARDWARE_SETTING
+# ============================
+i2s_audio:
+  - id: i2s
+    i2s_lrclk_pin: ${i2s_lrclk}
+    i2s_bclk_pin: ${i2s_bclk}
+  - id: i2s_in
+    i2s_lrclk_pin: ${i2s_ws}
+    i2s_bclk_pin: ${i2s_sck}
+
+microphone:
+  - platform: i2s_audio
+    id: mic_id
+    adc_type: external
+    i2s_din_pin: ${mic}
+    channel: left
+    i2s_audio_id: i2s_in
+
+speaker:
+  - platform: i2s_audio
+    id: speaker_id
+    i2s_audio_id: i2s
+    dac_type: external
+    i2s_dout_pin:   
+      number: ${spk}
+    sample_rate: 48000
+    buffer_duration: 120ms
+
+  - platform: mixer
+    id: mixer_speaker_id
+    output_speaker: speaker_id
+    source_speakers:
+      - id: announcement_spk_mixer_input
+      - id: media_spk_mixer_input
+
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
+
+# ============================
+#   SPI def
+# ============================
+spi:
+  id: spi_bus1
+  clk_pin: GPIO15
+  mosi_pin: GPIO13
+  miso_pin: GPIO14
+  
+
+# ============================
+#   Lights
+# ============================
+output:
+  - platform: ledc
+    id: tft_led_pwm
+    pin: GPIO16
+    frequency: 20000 Hz
+    
+
+light:
+  - platform: monochromatic
+    output: tft_led_pwm
+    id: backlight
+    name: "TFT háttérvilágítás"
+    restore_mode: ALWAYS_ON
+    
+  - platform: esp32_rmt_led_strip
+    id: led
+    name: "Status LED"
+    chipset: WS2812
+    pin: ${ledpin}
+    num_leds: 1
+    rgb_order: GRB
+    restore_mode: ALWAYS_OFF      
+    effects:
+        - pulse:
+            name: "Slow Pulse"
+            transition_length: 250ms
+            update_interval: 250ms
+            min_brightness: 50%
+            max_brightness: 100%
+        - pulse:
+            name: "Fast Pulse"
+            transition_length: 100ms
+            update_interval: 100ms
+            min_brightness: 50%
+            max_brightness: 100%
+        - addressable_scan:
+            name: "Scan"
+            move_interval: 50ms
+            scan_width: 2
+        - addressable_lambda:
+            name: Volume Level Display
+            update_interval: 500ms
+            lambda: |-
+              float volume = id(speaker_media_player_id).volume;
+              int num_leds_on = round(volume * 4);
+              for (int i = 0; i < it.size(); i++) {
+                if (i < num_leds_on) {
+                  it[i] = Color(0, 0, 255); // Blue
+                } else {
+                  it[i] = Color::BLACK;
+                }
+              }
+
+# ============================
+#   LVGL display driver (ili9xxx)
+# ============================
+display:
+  - platform: ili9xxx
+    id: my_display
+    invert_colors: False
+    model: ili9341
+    cs_pin: GPIO10
+    dc_pin: GPIO12
+    reset_pin: GPIO11
+    spi_id: spi_bus1
+    data_rate: 10MHz
+    rotation: 270               # Fekvő mód ✔
+    dimensions:
+      width: 240
+      height: 320
+    auto_clear_enabled: false
+    update_interval: 5s 
+     
+# ============================
+#   LVGL touch driver (XPT2046)
+# ============================
+touchscreen:
+  - platform: xpt2046
+    id: my_touchscreen
+    display: my_display
+    calibration:
+      x_min: 200
+      x_max: 3860
+      y_min: 340
+      y_max: 3860
+    transform:
+      swap_xy: true
+    threshold: 900
+
+    cs_pin: GPIO17
+    interrupt_pin:
+      number: GPIO18
+      mode:
+        input: true
+        pulldown: true           # <-- A fő javítás ✔
+    spi_id: spi_bus1
+    #update_interval: 50ms
+    touch_timeout: 1s
+      
+    on_release:
+      - if:
+          condition: lvgl.is_paused
+          then:
+            - logger.log: "LVGL resuming"
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+            - light.turn_on: backlight
+
+http_request:
+# ============================
+#   Variables - Globals
+# ============================
+globals:
+  - id: ha_apis_ready #api connection ready?
+    type: bool
+    initial_value: "false"
+
+  - id: radios_fetched #sensor data collector ready?
+    type: bool
+    initial_value: "false" 
+  
+  - id: current_icon_download # icon download counter
+    type: int
+    initial_value: "0"
+
+  - id: icons_downloaded #icon collector ready?
+    type: bool
+    initial_value: "false"
+
+  - id: ui_ready #main display ready?
+    type: bool
+    initial_value: "false"  
+
+  - id: already_fetched
+    type: bool
+    initial_value: 'false'
+  
+  - id: radio_items
+    type: std::vector<std::tuple<std::string, std::string, std::string>>
+    initial_value: 'std::vector<std::tuple<std::string, std::string, std::string>>()'
+    restore_value: false
+
+  - id: current_screen
+    type: int
+    initial_value: "1"   # 1 = főképernyő, 2 = rádiók
+
+  - id: current_page
+    type: int
+    initial_value: "0"
+
+  - id: radio_count 
+    type: int
+    initial_value: "0"
+
+  - id: icon_total
+    type: int
+    initial_value: "0"
+
+  - id: icon_count
+    type: int
+    initial_value: "0"
+
+  - id: radio_subpage
+    type: int
+    initial_value: "0"
+
+  - id: max_subpage
+    type: int
+    initial_value: "0"
+
+  # ikon pointer tömb (24 elem)
+  - id: radio_icons
+    type: esphome::online_image::OnlineImage* [24]
+
+  - id: current_radio_index
+    type: int
+    initial_value: '0'
+
+  - id: player_active # lejátszás aktív?
+    type: bool
+    initial_value: "false"
+
+  - id: player_source
+    type: int
+    initial_value: "0"  #0 - no media, 1 - radio esp started, 2 - external medi from MA, 3 - YT playlist
+
+ 
+  - id: cover_busy
+    type: bool
+    initial_value: 'false'
+
+  - id: cover_last_url
+    type: std::string
+    initial_value: '""'
+
+  - id: cover_pending_url
+    type: std::string
+    initial_value: '""'
+
+
+# ============================
+#   Assist - globals
+# ============================
+  - id: init_in_progress
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+
+  - id: improv_ble_in_progress
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: voice_assistant_phase
+    type: int
+    restore_value: no
+    initial_value: ${voice_assist_not_ready_phase_id}
+
+  - id: is_tts_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: question_flag
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: is_timer_active
+    type: bool
+    restore_value: no
+# ============================
+#   Variables - Numbers
+# ============================
+number:
+  - platform: template
+    name: LVGL Screen timeout
+    optimistic: true
+    id: display_timeout
+    unit_of_measurement: "s"
+    initial_value: 45
+    restore_value: true
+    min_value: 10
+    max_value: 180
+    step: 5
+    mode: box  
+# ============================
+#   Time components
+# ============================
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time_sync:
+      - script.execute: time_update
+    on_time:
+      - minutes: '*'
+        seconds: 0
+        then:
+          - script.execute: time_update
+# ============================
+#   Assist_Media_Player
+# ============================
+media_player:
+  - platform: speaker
+    buffer_size: 1000000
+    name: None
+    id: speaker_media_player_id
+    media_pipeline:
+        format: MP3
+        speaker: media_spk_resampling_input
+        num_channels: 1
+    announcement_pipeline:
+        speaker: announcement_spk_resampling_input
+        num_channels: 1
+    volume_increment: 0.25
+    
+    on_play:       
+      - lambda: |-
+          ESP_LOGI("MWW", "Music playback started → wakeword stop");
+      - micro_wake_word.stop 
+      - lvgl.label.update:
+          id: ww_status
+          text: "\U000F0A45"
+    
+    on_idle:
+      - lambda: |-
+          ESP_LOGI("MWW", "Music idle → wakeword start");
+      - delay: 0.1s
+      - micro_wake_word.start 
+      - lvgl.label.update:
+          id: ww_status
+          text: "\U000F07C5"
+              
+
+    on_announcement:
+      - mixer_speaker.apply_ducking:
+          id: media_spk_mixer_input
+          decibel_reduction: 24
+          duration: 0.25s
+      - micro_wake_word.stop
+      - lvgl.label.update:
+          id: ww_status
+          text: "\U000F0A45"
+      - lambda: ESP_LOGI("MWW", "Announcement/TTS → wakeword OFF");
+              
+    on_state:
+      - delay: 0.9s
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_spk_mixer_input
+                decibel_reduction: 0
+                duration: 1.5s
+            - if:
+                condition:
+                  switch.is_on: voice_enabled
+                then:
+                  - micro_wake_word.start
+                  - lambda: |-
+                      ESP_LOGI("MWW", "Resuming wakeword after TTS");
+                  - lvgl.label.update:
+                      id: ww_status
+                      text: "\U000F07C5"
+                  
+                      
+
+    files:
+      - id: alarm_sound
+        file: sounds/alarm.flac # Placed in the yaml directory. Should be encoded with a 48000 Hz sample rate, mono or stereo audio, and 16 bits per sample.
+      - id: beep
+        file: sounds/r2d2d.flac
+# ============================
+#   Assist_Voice_Assistant
+# ============================
+voice_assistant:
+  id: va
+  microphone: mic_id
+  media_player: speaker_media_player_id
+  noise_suppression_level: 2.0
+  volume_multiplier: 2.0
+  auto_gain: 31dBFS
+  micro_wake_word: mww
+  on_client_connected:
+    - lambda: id(init_in_progress) = false; 
+    - if:
+        condition:
+          switch.is_on: voice_enabled
+        then:
+          - micro_wake_word.start
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          - lvgl.label.update:
+              id: ww_status
+              text: "\U000F07C5"
+         
+        else:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+          
+  on_client_disconnected:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};  
+    
+  on_listening:
+    - lambda: |-
+        id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+        id(is_tts_active) = false;
+        id(question_flag) = false;
+    
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+    
+  on_stt_end:
+  - homeassistant.event:
+      event: esphome.stt_text
+      data:
+        text: !lambda return x; 
+  on_tts_start: 
+    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+    
+    - lambda: |-
+        bool is_question = false;
+        if (!x.empty() && x.back() == '?') {
+          is_question = true;
+        }
+        id(question_flag) = is_question;
+  on_tts_end:
+    - lambda: |-
+        id(is_tts_active) = true;
+  
+    
+  on_end:
+    - light.turn_off: led
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        not:
+          voice_assistant.is_running:
+    - delay: 0.7s
+    - if:
+        condition:
+          and:
+            - lambda: 'return !id(question_flag);'
+            - lambda: 'return id(is_tts_active);'
+        then:
+          - voice_assistant.start:
+        else: 
+          - mixer_speaker.apply_ducking:
+              id: media_spk_mixer_input
+              decibel_reduction: 0
+              duration: 1.0s
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          
+
+  on_error:
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id}; 
+          
+          - delay: 1s
+          - if:
+              condition:
+                switch.is_on: voice_enabled
+              then:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              else:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+# ============================
+#   Assist_Mikro_Wake_word
+# ============================
+micro_wake_word:
+  models:
+    - model: hey_jarvis
+      id: Hey_Jarvis
+      probability_cutoff: 0.5
+      sliding_window_size: 5
+  vad:
+    # model: https://github.com/kahrendt/microWakeWord/releases/download/v2.1_models/vad.json
+    probability_cutoff: 0.05
+  id: mww
+  stop_after_detection: false
+  on_wake_word_detected:
+    - if:
+        condition:
+          switch.is_on: timer_ringing
+        then:
+          - switch.turn_off: timer_ringing
+        else:
+          - if:
+              condition:
+                switch.is_on: voice_enabled
+              then:
+                - if:
+                    condition:
+                      voice_assistant.is_running:
+                    then:
+                      voice_assistant.stop:
+                    else:
+                      - if:
+                          condition:
+                            media_player.is_announcing:
+                          then:
+                            - media_player.stop:
+                                announcement: true
+                          else:
+                            - media_player.speaker.play_on_device_media_file:
+                                media_file: beep
+                                announcement: false
+                            - delay: 300ms
+                            - voice_assistant.start:
+                                wake_word: !lambda return wake_word;
+                            
+# ============================
+#   LVGL online images _ icon downloader
+# ============================
+online_image:
+  - id: album_cover
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 96x96
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.jpg"
+    on_download_finished:
+      then:
+        - lambda: |-
+            id(cover_busy) = false;
+            ESP_LOGI("COVER", "Cover downloaded (busy=false)");
+        - script.execute: cover_kick
+
+    on_error:
+      then:
+        - lambda: |-
+            id(cover_busy) = false;
+            ESP_LOGI("COVER", "Cover download error (busy=false)");
+        - script.execute: cover_kick  
+    
+  - id: radio_icon_0
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_1
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_2
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_3
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_4
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_5
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_6
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_7
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_8
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_9
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_10
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_11
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_12
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_13
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_14
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_15
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_16
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_17
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_18
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_19
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_20
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_21
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_22
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: radio_icon_23
+    type: RGB565
+    format: jpg
+    transparency: alpha_channel
+    resize: 64x64
+    url: "http://${ha_ip}:${ha_port}/local/icons/default.png"             # kezdetben üres, majd JSON-ből töltjük
+    on_download_finished:
+      - lambda: |-
+          // Növeljük a számlálót
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          // Ha még van mit letölteni → indítsuk a következőt
+          if (id(icon_count) < id(icon_total)) {
+
+            int next = id(icon_count);
+
+            ESP_LOGI("ICON", "Starting next icon: %d", next);
+
+            switch (next) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+              
+            }
+
+          } else {
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(icons_downloaded) = true;
+            id(all_icons_downloaded).execute();
+          }
+
+
+# ============================
+#   LVGL fonts
+# ============================
+font:
+  - file: "fonts/arial.ttf"
+    id: font1
+    size: 20
+  - file: "fonts/DIGITALDREAMFAT.ttf"
+    id: font1_digit
+    size: 40
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icons_100
+    size: 20
+    bpp: 4
+    glyphs: [
+       "\U000F050F",  # thermometer
+       "\U000F058E",  # water drop
+       "\U000F16BF",  # wifi status ikon
+       "\U000F040E",  # play/pause
+       "\U000F04DB",  # stop
+       "\U000F07C5",  # wake_on  
+       "\U000F0A45",  # wake_off
+       "\U000F0439",  # radio_on
+       "\U000F121C"   # radio_off
+      ]
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icon_200
+    size: 48
+    glyphs: [    
+       "\U000F17D0"   # lamp
+      ]
+# ============================
+#   LVGL UI Init
+# ============================
+lvgl:
+  disp_bg_color: black
+  buffer_size: 25%
+  displays:
+    - my_display
+  touchscreens:
+    - my_touchscreen
+  on_idle:
+    timeout: !lambda "return (id(display_timeout).state * 1000);"
+    then:
+      - logger.log: "LVGL is idle"
+      - light.turn_off: backlight
+      - lvgl.pause: 
+
+
+
+  style_definitions:
+    - id: header_footer
+      bg_color: 0x808080
+      bg_grad_color: 0x303030
+      bg_grad_dir: VER
+      bg_opa: COVER
+      border_opa: TRANSP
+      radius: 1
+      pad_all: 0
+      pad_row: 0
+      pad_column: 0
+      border_color: 0x0077b3
+      text_color: 0xFFFFFF
+      width: 100%
+      height: 28
+# ============================
+#   Header & Footer
+# ============================ 
+  top_layer:
+    widgets:
+      - label:
+          text: "\U000F16BF"
+          text_font: icons_100
+          id: lbl_hastatus
+          hidden: true
+          align: top_right
+          x: -10
+          y: 5
+          text_align: right
+          text_color: 0xFFFFFF
+      - label:    
+          text: "\U000F07C5"
+          text_font: icons_100
+          id: ww_status
+          #hidden: true
+          x: 270
+          y: 5
+          text_align: right
+          text_color: 0xFFFFFF
+      - label:
+          text: "\U000F121C"
+          text_font: icons_100
+          id: radio_status
+          x: 250
+          y: 5
+          text_align: right
+          text_color: 0xFFFFFF
+
+      - buttonmatrix:
+          align: bottom_mid
+          styles: header_footer
+          pad_all: 0
+          outline_width: 0
+          id: top_layer
+          items:
+            styles: header_footer
+          rows:
+            - buttons:
+              - id: page_prev
+                text: "\uF053"
+                on_press:
+                  then:
+                    - script.execute: nav_prev
+              - id: page_home
+                text: "\uF015"
+                on_press:
+                  then:
+                    - script.execute: nav_home
+              - id: page_next
+                text: "\uF054"
+                on_press:
+                  then:
+                    - script.execute: nav_next
+# ============================
+#   Pages
+# ============================ 
+  pages:
+    - id: boot_page
+      skip: true
+      bg_color: 0x000000
+      widgets:
+        - label:
+            id: boot_label
+            text: "Booting..."
+            align: CENTER
+    
+    # ============================================
+    #                 RADIO PLAYER PAGE
+    # ============================================
+    - id: player_page
+      skip: true
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Radio Player"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF  
+        # ---------- HEADER ----------
+        - label:
+            id: player_header_clock
+            text: "00:00"
+            align: TOP_LEFT
+            y: 5
+            x: 10
+            text_font: montserrat_18
+            text_color: 0xFFFFFF
+
+        # ---------- RÁDIÓ IKON ----------
+        - obj:
+            id: player_icon_box
+            width: 96
+            height: 96
+            x: 10
+            y: 55
+            scrollable: false
+            widgets:
+              - image:
+                  id: player_icon
+                  align: CENTER
+                  zoom: 1.5   
+                  src: radio_icon_0
+                  
+              
+
+        # ---------- ELŐADÓ + CÍM ----------
+        - label:
+            id: artist_label
+            text: "Artist:"
+            x: 120
+            y: 48
+            text_font: montserrat_12
+            text_color: 0xFF0000
+        - label:
+            id: player_artist
+            text: "Artist: "
+            x: 120
+            y: 60
+            text_font: montserrat_10
+            text_color: 0xFFFFFF
+        - label:
+            id: title_label
+            text: "Title:"
+            x: 120
+            y: 78
+            text_font: montserrat_12
+            text_color: 0xFF0000 
+        - label:
+            id: player_title
+            text: "Title: "
+            x: 120
+            y: 90
+            text_font: montserrat_10
+            text_color: 0xFFFFFF
+
+        # ---------- PLAY / PAUSE ----------
+        - button:
+            id: btn_play_pause
+            width: 45
+            height: 30
+            x: 120
+            y: 120
+            on_press:
+              - homeassistant.service:
+                  service: media_player.media_play_pause
+                  data:
+                    entity_id: ${media_player_name}
+            widgets:
+              - label:
+                  text: "\U000F040E"      # PLAY ikon
+                  text_font: icons_100
+                  text_color: 0x000000
+
+        # ---------- STOP ----------
+        - button:
+            id: btn_stop
+            width: 45
+            height: 30
+            x: 190
+            y: 120
+            on_press:
+              - micro_wake_word.stop
+              - lvgl.label.update:
+                  id: ww_status
+                  text: "\U000F0A45"
+              - homeassistant.service:
+                  service: media_player.media_stop
+                  data:
+                    entity_id: ${media_player_name}
+              - lambda: |-
+                  id(player_active) = false;      
+              - lvgl.page.show: radio_page
+            widgets:
+              - label:
+                  text: "\U000F04DB"      # STOP ikon
+                  text_font: icons_100
+                  text_color: 0x000000
+   
+
+        # ---------- HANGERŐ SLIDER ----------
+        - slider:
+            id: volume_slider
+            width: 220
+            height: 15
+            x: 20
+            y: 170
+            min_value: 0
+            max_value: 100
+            on_release:
+              then:
+                - homeassistant.service:
+                    service: media_player.volume_set
+                    data:
+                      entity_id: ${media_player_name}
+                      volume_level: !lambda |-
+                        int v = lv_slider_get_value(id(volume_slider));
+                        return v / 100.0f;
+    
+    # ============================================
+    #                 MEDIA PLAYER PAGE
+    # ============================================
+    - id: media_player_page
+      skip: true
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Media Player"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF  
+        # ---------- HEADER ----------
+        - label:
+            id: media_player_header_clock
+            text: "00:00"
+            align: TOP_LEFT
+            y: 5
+            x: 10
+            text_font: montserrat_18
+            text_color: 0xFFFFFF
+
+        # ---------- RÁDIÓ IKON ----------
+        - obj:
+            id: media_player_icon_box
+            width: 96
+            height: 96
+            x: 10
+            y: 55
+            scrollable: false
+            widgets:
+              - image:
+                  id: media_player_icon
+                  align: CENTER
+                  src: radio_icon_0
+                  
+              
+
+        # ---------- ELŐADÓ + CÍM ----------
+        - label:
+            id: media_player_artist_label
+            text: "Artist:"
+            x: 120
+            y: 48
+            text_font: montserrat_12
+            text_color: 0xFF0000
+        - label:
+            id: media_player_artist
+            text: "Artist: "
+            x: 120
+            y: 60
+            text_font: montserrat_10
+            text_color: 0xFFFFFF
+        - label:
+            id: media_player_title_label
+            text: "Title:"
+            x: 120
+            y: 78
+            text_font: montserrat_12
+            text_color: 0xFF0000 
+        - label:
+            id: media_player_title
+            text: "Title: "
+            x: 120
+            y: 90
+            text_font: montserrat_10
+            text_color: 0xFFFFFF
+
+        # ---------- PLAY / PAUSE ----------
+        - button:
+            id: media_player_btn_play_pause
+            width: 45
+            height: 30
+            x: 120
+            y: 120
+            on_press:
+              - homeassistant.service:
+                  service: media_player.media_play_pause
+                  data:
+                    entity_id: ${media_player_name}
+            widgets:
+              - label:
+                  text: "\U000F040E"      # PLAY ikon
+                  text_font: icons_100
+                  text_color: 0x000000
+
+        # ---------- STOP ----------
+        - button:
+            id: media_player_btn_stop
+            width: 45
+            height: 30
+            x: 190
+            y: 120
+            on_press:
+              - micro_wake_word.stop
+              - lvgl.label.update:
+                  id: ww_status
+                  text: "\U000F0A45"
+              - homeassistant.service:
+                  service: media_player.media_stop
+                  data:
+                    entity_id: ${media_player_name}
+              - lambda: |-
+                  id(player_active) = false;      
+              - lvgl.page.show: radio_page
+            widgets:
+              - label:
+                  text: "\U000F04DB"      # STOP ikon
+                  text_font: icons_100
+                  text_color: 0x000000
+   
+
+        # ---------- HANGERŐ SLIDER ----------
+        - slider:
+            id: media_player_volume_slider
+            width: 220
+            height: 15
+            x: 20
+            y: 170
+            min_value: 0
+            max_value: 100
+            on_release:
+              then:
+                - homeassistant.service:
+                    service: media_player.volume_set
+                    data:
+                      entity_id: ${media_player_name}
+                      volume_level: !lambda |-
+                        int v = lv_slider_get_value(id(volume_slider));
+                        return v / 100.0f;
+    # ============================================
+    #                Main PAGE
+    # ============================================
+            
+    - id: main_page
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Music Assistant Satelit"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+        - label:
+            id: lbl_time
+            text: "00:00"
+            x: 10
+            y: 50
+            text_font: font1_digit
+            text_color: 0xFF0000
+        - label:
+            id: lbl_date
+            text: "0000/00/00"
+            x: 45
+            y: 100
+            text_font: font1
+            text_color: 0xFF0000
+        - label:
+            id: lbl_temp_icon
+            text: "\U000F050F"       # thermometer icon
+            x: 50
+            y: 125
+            text_font: icons_100
+            text_color: 0x0000FF
+        - label:
+            id: lbl_hum_icon
+            text: "\U000F058E"       # water drop icon
+            x: 50
+            y: 150
+            text_font: icons_100
+            text_color: 0x00A0FF
+        - label:
+            id: lbl_hum
+            text: "-- %"
+            x: 70
+            y: 150
+            text_font: font1
+            text_color: 0xFFFFFF
+        - label:
+            id: lbl_temp
+            text: "-- °C"
+            x: 70
+            y: 125
+            text_font: font1
+            text_color: 0xFFFFFF
+        - button:
+            id: lvgl_btn_konnektor
+            x: 240
+            y: 50
+            width: 64
+            height: 64
+            checkable: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      return lv_obj_has_state(lvgl_btn_konnektor, LV_STATE_CHECKED);
+                  then:
+                    - switch.turn_on: ${startup_screen_switch}
+                  else:
+                    - switch.turn_off: ${startup_screen_switch}
+            widgets:
+              - label:
+                  text: "\U000F17D0"
+                  align: center
+                  text_font: icon_200
+                  text_color: 0x000000
+
+
+    # ============================================
+    #                Radio Controll PAGE
+    # ============================================
+
+    - id: radio_page
+      scrollable: false
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            align: TOP_MID
+            styles: header_footer
+            widgets:
+              - label:
+                  text: "Radio Grid"
+                  align: CENTER
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        # ==== RADIO GRID 2×4 ====
+        - obj:
+            id: radio_grid
+            bg_color: 0x000000
+            align: CENTER
+            width: 340
+            height: 180
+            layout:
+              type: grid
+              grid_columns: [70,70,70,70]
+              grid_rows: [75,75]
+            widgets:
+              # ===== BUTTON 0 =====
+              - button:
+                  id: btn0
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 0
+                  grid_cell_column_pos: 0
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 0;
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                        # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"                                                            
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn0_img
+                        src: radio_icon_0
+                        width: 64
+                        height: 64    
+                  
+
+              # ===== BUTTON 1 =====
+              - button:
+                  id: btn1
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 0
+                  grid_cell_column_pos: 1
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 1;
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                        # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"                      
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn1_img
+                        src: radio_icon_1
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 2 =====
+              - button:
+                  id: btn2
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 0
+                  grid_cell_column_pos: 2
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 2;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.assist_halo_2
+                              data:
+                                entity_id: media_player.${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;                          
+                          - lvgl.page.show: player_page        
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"                     
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn2_img
+                        src: radio_icon_2
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 3 =====
+              - button:
+                  id: btn3
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 0
+                  grid_cell_column_pos: 3
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 3;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"
+                                                
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn3_img
+                        src: radio_icon_3
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 4 =====
+              - button:
+                  id: btn4
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 1
+                  grid_cell_column_pos: 0
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 4;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"
+                                               
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn4_img
+                        src: radio_icon_4
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 5 =====
+              - button:
+                  id: btn5
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 1
+                  grid_cell_column_pos: 1
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 5;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"
+                                                
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn5_img
+                        src: radio_icon_5
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 6 =====
+              - button:
+                  id: btn6
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 1
+                  grid_cell_column_pos: 2
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 6;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"
+                                                
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn6_img
+                        src: radio_icon_6
+                        width: 64
+                        height: 64
+
+              # ===== BUTTON 7 =====
+              - button:
+                  id: btn7
+                  width: 70
+                  height: 70
+                  grid_cell_row_pos: 1
+                  grid_cell_column_pos: 3
+                  on_press:
+                    - lambda: |-
+                        int idx = id(radio_subpage) * 8 + 7;
+
+                        // mentjük a globális indexet
+                        id(current_radio_index) = idx;
+
+                        // debug log
+                        if (idx < id(radio_count)) {
+                          auto &item = id(radio_items)[idx];
+                          ESP_LOGI("RADIO", "Pressed URI: %s", std::get<0>(item).c_str());
+                        }
+
+                    - if:
+                        condition:
+                          lambda: |-
+                            int idx = id(current_radio_index);
+                            return idx < id(radio_count);
+                        then:
+                          # ---- Rádió indítása ----
+                          - script.execute: stop_wake_word
+                          - homeassistant.service:
+                              service: music_assistant.play_media
+                              data:
+                                entity_id: ${media_player_name}
+                                media_type: radio
+                                enqueue: replace
+                                media_id: !lambda |-
+                                  int idx = id(current_radio_index);
+                                  auto &item = id(radio_items)[idx];
+                                  return std::get<0>(item).c_str();
+
+                          # ---- Player ikon frissítése ----
+                          - lvgl.image.update:
+                              id: player_icon
+                              zoom: 1.5
+                              src: !lambda |-
+                                int idx = id(current_radio_index);
+                                return id(radio_icons)[idx];
+                          # ---- Player oldal megjelenítése ----
+                          - lambda: |-
+                              id(player_active) = true;
+                          - lvgl.page.show: player_page
+                          - lvgl.label.update:
+                              id: player_title
+                              text: "-"
+                                                
+                  widgets:
+                    - image:
+                        align: CENTER
+                        id: btn7_img
+                        src: radio_icon_7
+                        width: 64
+                        height: 64
+
+# ============================
+#   Sensors
+# ============================   
+binary_sensor:
+  - platform: template
+    id: api_ready
+    lambda: |-
+      return api::global_api_server->is_connected();
+
+text_sensor:
+  - platform: homeassistant
+    id: player_picture
+    entity_id: ${media_player_name}
+    attribute: entity_picture
+    on_value:
+      then:
+        - lambda: |-
+            // Radio: nem foglalkozunk borítóval
+            if (id(player_source) == 1) return;
+
+            // Helper: URL-encode (RFC3986)
+            auto url_encode = [](const std::string &in) -> std::string {
+              static const char *hex = "0123456789ABCDEF";
+              std::string out;
+              out.reserve(in.size() * 3);
+              for (unsigned char c : in) {
+                if ((c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '-' || c == '.' || c == '_' || c == '~') {
+                  out.push_back((char)c);
+                } else {
+                  out.push_back('%');
+                  out.push_back(hex[(c >> 4) & 0xF]);
+                  out.push_back(hex[c & 0xF]);
+                }
+              }
+              return out;
+            };
+
+            // Helper: egyszerű prefix check
+            auto starts_with = [](const std::string &s, const char *pfx) -> bool {
+              return s.rfind(pfx, 0) == 0;
+            };
+
+            // Helper: proxy URL építés (helyi MA imageproxy)
+            auto build_proxy = [&](const std::string &orig_url) -> std::string {
+              // size=96 és fmt=jpeg fix, mert neked 96x96 kell
+              // provider legyen állandó (ytmusic), a path hordoz mindent
+              return std::string("http://192.168.0.60:8095/imageproxy?provider=ytmusic&size=96&fmt=jpeg&path=")
+                     + url_encode(orig_url);
+            };
+
+            std::string in = x;
+
+            if (in.empty()) {
+              ESP_LOGI("COVER", "No album art");
+              return;
+            }
+
+            std::string final_url;   // amit ténylegesen letöltünk (proxy vagy direkt)
+            std::string small = in;  // opcionálisan méretezett "forrás url"
+
+            // --- SOURCE 2: TRACK (Music Assistant tipikus size=0) ---
+            if (id(player_source) == 2) {
+              ESP_LOGI("COVER", "TRACK image processing");
+
+              // Csak a "size=0" formátumot dolgozzuk (ahogy eddig)
+              auto pos = small.find("size=0");
+              if (pos == std::string::npos) {
+                ESP_LOGI("COVER", "Skipping non-album image (no size=0)");
+                return;
+              }
+              small.replace(pos, 6, "size=96");
+
+              // Ha már eleve proxys (http://192.168.../imageproxy?...), hagyhatod így,
+              // de át is engedheted újra proxyn; itt most meghagyjuk:
+              final_url = small;
+
+              ESP_LOGI("COVER", "TRACK Cover URL: %s", final_url.c_str());
+            }
+
+            // --- SOURCE 3: YT MUSIC ---
+            else if (id(player_source) == 3) {
+              ESP_LOGI("COVER", "YT image processing");
+
+              // 1) Googleusercontent méretcsere (ha ez a minta)
+              //    (ha más méret jönne, proxy úgyis 96-ra húzza, de ez csökkentheti a proxy workot)
+              if (small.find("w600-h600") != std::string::npos) {
+                auto p = small.find("w600-h600");
+                small.replace(p, 9, "w96-h96");
+              }
+
+              // 2) YT képek lehetnek:
+              //    - https://lh3.googleusercontent.com/...=w..-h..-p
+              //    - https://i.ytimg.com/vi/.../hq720.jpg?sqp=...&rs=...
+              //    Mindet proxyn át kérjük le, hogy az ESP ne menjen ki a netre.
+              if (starts_with(small, "http://") || starts_with(small, "https://")) {
+                final_url = build_proxy(small);
+              } else {
+                // Ha valamiért nem URL (ritka), akkor ne próbáljuk
+                ESP_LOGI("COVER", "Skipping unknown cover format (not http/https)");
+                return;
+              }
+
+              ESP_LOGI("COVER", "YT Source URL: %s", small.c_str());
+              ESP_LOGI("COVER", "YT Proxy URL: %s", final_url.c_str());
+            }
+
+            // Más source: most nem kezeljük
+            else {
+              ESP_LOGI("COVER", "Skipping cover (unknown player_source=%d)", id(player_source));
+              return;
+            }
+
+            // --- Duplázás elkerülése ---
+            if (!final_url.empty() && final_url == id(cover_last_url)) {
+              ESP_LOGI("COVER", "Cover unchanged, skipping");
+              return;
+            }
+            id(cover_last_url) = final_url;
+
+            // --- Pending kezelés ---
+            // Ha épp letölt, akkor csak felülírjuk a pending-et (legfrissebb nyer).
+
+            id(cover_pending_url) = final_url;
+            ESP_LOGI("COVER", "YT Proxy download URL: %s", final_url.c_str());
+            // Indítsuk el, ha lehet
+            ESP_LOGI("COVER", "Script Cover_kick started");
+            id(cover_kick).execute();
+
+        
+
+  - platform: homeassistant # aktuális media_player media_type meghatározása
+    id: media_content_id
+    entity_id: ${media_player_name}
+    attribute: media_content_id
+    on_value:
+      then:
+        - lambda: |-
+            ESP_LOGI("PLAYER", "media_content_id = %s", x.c_str());
+
+            if (x.rfind("library://radio/", 0) == 0) {
+              // ESP-ről indított rádió
+              id(player_active) = true;
+              id(player_source) = 1;
+            }
+            else if (x.rfind("library://track/", 0) == 0) {
+              // HA / Music Assistant küldte
+              id(player_active) = true;
+              id(player_source) = 2;
+            }
+            else if (x.rfind("ytmusic", 0) == 0) {
+              // MA YT music
+              id(player_active) = true;
+              id(player_source) = 3;
+
+            } 
+            else {
+              id(player_active) = false;
+              id(player_source) = 0;
+            }
+
+  - platform: homeassistant # media_player lejátszó állapot meghatározása
+    id: player_state
+    entity_id: ${media_player_name}
+    on_value: 
+      then:
+        - lambda: |-
+            ESP_LOGI("PLAYER", "state = %s", x.c_str());
+
+            if (x == "playing") {
+              lv_label_set_text(id(radio_status), "\U000F0439"); // radio on
+            } else {
+              lv_label_set_text(id(radio_status), "\U000F121C"); // radio off
+            }
+              
+
+  - platform: homeassistant # aktuálisan játszott media címe
+    id: ha_now_title
+    entity_id: ${media_player_name}
+    attribute: media_title
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: player_title
+            text: !lambda 'return x.c_str();'
+
+  - platform: homeassistant # aktuálisan játszott média előadója
+    id: ha_now_artist
+    entity_id: ${media_player_name}
+    attribute: media_artist
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: player_artist
+            text: !lambda 'return x.c_str();'
+
+  - platform: homeassistant 
+  # kedvemc rádiók áttöltése a HA-ból (sensor.radiok <- pyscript.get_ma_radios tölti fel)
+  # max 24 kedvenc rádió az MA alatt, ha nincs ikonja, vagy mem négyzetes -# saját ikon generálás neki
+
+    id: ha_radios_json
+    entity_id: sensor.radiok
+    attribute: radios
+    on_value:
+      then:
+    # ---- 0. BIZTONSÁG: ha már egyszer feldolgoztuk, SOHA többé ne fusson le ----
+        - lambda: |-
+            if (id(already_fetched)) {
+              ESP_LOGI("RADIO", "ha_radios_json: JSON already processed, skipping.");
+              return;
+            }
+
+            ESP_LOGI("RADIO", "ha_radios_json: Processing radio list for the FIRST time...");
+
+            // reset flags for initial load
+            id(radio_count) = 0;
+            id(icon_total) = 0;
+            id(icon_count) = 0;
+            id(icons_downloaded) = false;
+
+            std::string data = id(ha_radios_json).state;
+            ESP_LOGI("RADIO", "Raw radios attribute: %s", data.c_str());
+
+            // ---- 1. Quote normalization ----
+            for (char &c : data) {
+              if (c == '\'') c = '"';
+            }
+
+            size_t pos = 0;
+            int index = 0;
+
+            while (true) {
+              // --- JSON object search ---
+              size_t start = data.find("{", pos);
+              if (start == std::string::npos) break;
+
+              size_t end = data.find("}", start);
+              if (end == std::string::npos) break;
+
+              std::string obj = data.substr(start, end - start + 1);
+
+              // ---- Extract URI ----
+              std::string uri;
+              {
+                size_t u1 = obj.find("\"uri\"");
+                if (u1 != std::string::npos) {
+                  size_t q1 = obj.find("\"", u1 + 5);
+                  size_t q2 = obj.find("\"", q1 + 1);
+                  if (q1 != std::string::npos && q2 != std::string::npos)
+                    uri = obj.substr(q1 + 1, q2 - q1 - 1);
+                }
+              }
+
+              // ---- Extract NAME ----
+              std::string name;
+              {
+                size_t n1 = obj.find("\"name\"");
+                if (n1 != std::string::npos) {
+                  size_t q1 = obj.find("\"", n1 + 6);
+                  size_t q2 = obj.find("\"", q1 + 1);
+                  if (q1 != std::string::npos && q2 != std::string::npos)
+                    name = obj.substr(q1 + 1, q2 - q1 - 1);
+                }
+              }
+
+              // ---- Extract IMAGE ----
+              std::string image;
+              {
+                size_t i1 = obj.find("\"image\"");
+                if (i1 != std::string::npos) {
+                  size_t q1 = obj.find("\"", i1 + 7);
+                  size_t q2 = obj.find("\"", q1 + 1);
+                  if (q1 != std::string::npos && q2 != std::string::npos)
+                    image = obj.substr(q1 + 1, q2 - q1 - 1);
+                }
+              }
+
+              // if no image, skip this entry
+              if (image.empty()) {
+                pos = end + 1;
+                continue;
+              }
+
+              // ---- Build full URL ----
+              std::string full_url = std::string("http://${ha_ip}:${ha_port}") + image;
+
+              ESP_LOGI("RADIO", "Radio %d → URI=%s NAME=%s IMG=%s",
+                index, uri.c_str(), name.c_str(), full_url.c_str());
+
+              // ---- Set icon URL ----
+              switch (index) {
+                case 0:  id(radio_icon_0).set_url(full_url.c_str()); break;
+                case 1:  id(radio_icon_1).set_url(full_url.c_str()); break;
+                case 2:  id(radio_icon_2).set_url(full_url.c_str()); break;
+                case 3:  id(radio_icon_3).set_url(full_url.c_str()); break;
+                case 4:  id(radio_icon_4).set_url(full_url.c_str()); break;
+                case 5:  id(radio_icon_5).set_url(full_url.c_str()); break;
+                case 6:  id(radio_icon_6).set_url(full_url.c_str()); break;
+                case 7:  id(radio_icon_7).set_url(full_url.c_str()); break;
+                case 8:  id(radio_icon_8).set_url(full_url.c_str()); break;
+                case 9:  id(radio_icon_9).set_url(full_url.c_str()); break;
+                case 10: id(radio_icon_10).set_url(full_url.c_str()); break;
+                case 11: id(radio_icon_11).set_url(full_url.c_str()); break;
+                case 12: id(radio_icon_12).set_url(full_url.c_str()); break;
+                case 13: id(radio_icon_13).set_url(full_url.c_str()); break;
+                case 14: id(radio_icon_14).set_url(full_url.c_str()); break;
+                case 15: id(radio_icon_15).set_url(full_url.c_str()); break;
+                case 16: id(radio_icon_16).set_url(full_url.c_str()); break;
+                case 17: id(radio_icon_17).set_url(full_url.c_str()); break;
+                case 18: id(radio_icon_18).set_url(full_url.c_str()); break;
+                case 19: id(radio_icon_19).set_url(full_url.c_str()); break;
+                case 20: id(radio_icon_20).set_url(full_url.c_str()); break;
+                case 21: id(radio_icon_21).set_url(full_url.c_str()); break;
+                case 22: id(radio_icon_22).set_url(full_url.c_str()); break;
+                case 23: id(radio_icon_23).set_url(full_url.c_str()); break;
+              }
+              id(radio_items).push_back( std::make_tuple(uri, name, full_url) );
+              index++;
+              pos = end + 1;
+            }
+
+            id(radio_count) = index;
+            id(icon_total) = index;
+
+            ESP_LOGI("RADIO", "Loaded %d radios total", index);
+
+            // ----- 2. INDÍTÁS CSAK EGYSZER -----
+            if (!id(icons_downloaded) && index > 0) {
+              id(current_icon_download) = 0;
+              id(icons_downloaded) = false;
+              ESP_LOGI("ICON", "Starting sequential icon download...");
+              id(icon_count) = 0;
+              id(radio_icon_0).update();
+            }
+
+            // ----- 3. lezárás: többé ne fusson soha -----
+            id(already_fetched) = true;
+            id(radios_fetched) = true;
+
+  - platform: homeassistant
+    id: ha_temp
+    entity_id: ${HA_TEMP}
+
+  - platform: homeassistant
+    id: ha_hum
+    entity_id: ${HA_HUMI}
+
+sensor:
+  - platform: homeassistant
+    id: ha_now_volume
+    entity_id: ${media_player_name}
+    attribute: volume_level
+    on_value: 
+      then:
+        - lambda: |-
+            if (isnan(x)) return;
+            int v = (int)(x * 100.0f);
+            lv_slider_set_value(id(volume_slider), v, LV_ANIM_OFF);
+            lv_slider_set_value(id(media_player_volume_slider), v, LV_ANIM_OFF);
+
+  - platform: uptime
+    type: seconds
+    name: Uptime Sensor
+    entity_category: "diagnostic"
+
+  - platform: wifi_signal
+    name: "WiFi Signal dB"
+    update_interval: 60s
+    entity_category: "diagnostic"
+
+# ============================
+#   Buttons
+# ============================
+button:
+  - platform: restart
+    name: reboot
+# ============================
+#   Switch
+# ============================
+switch:
+  - platform: homeassistant
+    id: konnektor_halo
+    entity_id: switch.konnektor_halo
+    on_turn_on:
+      - lambda: |-
+          lv_obj_add_state(lvgl_btn_konnektor, LV_STATE_CHECKED);
+    on_turn_off:
+      - lambda: |-
+          lv_obj_clear_state(lvgl_btn_konnektor, LV_STATE_CHECKED);
+
+  - platform: template
+    name: Enable Voice Assistant
+    id: voice_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: mdi:assistant
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:      
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+            - if:
+                condition:
+                  not:
+                    - voice_assistant.is_running
+                then:
+                  - micro_wake_word.start
+                  - lvgl.label.update:
+                      id: ww_status
+                      text: "\U000F07C5"
+
+    on_turn_off:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:      
+            - voice_assistant.stop
+            - micro_wake_word.stop
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+            - lvgl.label.update:
+                id: ww_status
+                text: "\U000F0A45"
+
+  - platform: template
+    name: "Ring Timer"
+    id: timer_ringing
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+        - media_player.stop:
+            announcement: true
+       
+    on_turn_on:
+        - while:
+            condition:
+                switch.is_on: timer_ringing
+            then:
+                - media_player.speaker.play_on_device_media_file:
+                    media_file: alarm_sound
+                    announcement: true
+                - wait_until:
+                    media_player.is_announcing:
+                - wait_until:
+                    not:
+                      media_player.is_announcing:
+                
+                - delay: 1000ms
+# ============================
+#   Intervals
+# ============================
+interval:
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: api_ready
+          then:
+            - if:
+                condition:
+                  lambda: 'return !id(already_fetched);'
+                then:
+                  - logger.log: "API up → fetching MA library…"
+                  - script.execute: refresh_radios
+                  - lambda: 'id(already_fetched) = true;'
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: player_header_clock
+          text: !lambda |-
+            char buf[16];
+            time_t now = id(ha_time).now().timestamp;
+            strftime(buf, sizeof(buf), "%H:%M", localtime(&now));
+            return std::string(buf);                
+# ============================
+#   Scripts
+# ============================
+script:
+  - id: nav_prev
+    then:
+      - if:
+          condition:
+            lambda: 'return id(current_page) == 1;'
+          then:
+            - if:
+                condition:
+                  lambda: 'return id(radio_subpage) > 0;'
+                then:
+                  - lambda: |-
+                      id(radio_subpage)--;
+                  - script.execute: update_radio_icons
+                else:
+                  # első rádió oldalról vissza a főoldalra
+                  - lvgl.page.show: main_page
+                  - lambda: |-
+                      id(current_page) = 0;
+      - if:
+          condition:
+            lambda: 'return id(current_page) == 0;'
+          then:
+            - lvgl.page.previous:
+
+
+
+  - id: nav_next
+    then:
+      - if:
+          condition:
+            lambda: 'return id(current_page) == 0;'
+          then:
+            # főképernyőről lépjünk át a rádió oldalra
+            - lvgl.page.show: radio_page
+            - lambda: |-
+                id(current_page) = 1;
+                id(radio_subpage) = 0;
+            - script.execute: update_radio_icons
+          else:
+            # már rádió oldalon vagyunk → lapozzunk a következő 8-as blokkal
+            - if:
+                condition:
+                  lambda: 'return id(current_page) == 1 && id(radio_subpage) < id(max_subpage);'
+                then:
+                  - lambda: |-
+                      id(radio_subpage)++;
+                  - script.execute: update_radio_icons
+                else:
+                  - if:
+                      condition:
+                        lambda: 'return id(player_active);'
+                      then:
+                        - lvgl.page.show: player_page
+                        - lambda: |-
+                            id(current_page) = 2;  
+
+
+  - id: nav_home
+    then:
+      - lvgl.page.show: main_page
+      - lambda: |-
+          id(current_page) = 0;
+
+  - id: calc_max_subpage
+    mode: single
+    then:
+      - lambda: |-
+          id(max_subpage) = (id(radio_count) - 1) / 8;
+
+  - id: update_radio_icons
+    mode: single
+    then:
+      - lambda: |-
+          // ha még nincsenek készen az ikonok vagy nincs rádió, lépjünk ki
+          if (!id(icons_downloaded) || id(radio_count) == 0) {
+            ESP_LOGI("RADIO", "update_radio_icons: icons not ready (icons_downloaded=%d, radio_count=%d)",
+                     id(icons_downloaded), id(radio_count));
+            return;
+          }
+
+          lv_obj_t* btns[8] = {
+            id(btn0), id(btn1), id(btn2), id(btn3),
+            id(btn4), id(btn5), id(btn6), id(btn7)
+          };
+
+          lv_obj_t* imgs[8] = {
+            id(btn0_img), id(btn1_img), id(btn2_img), id(btn3_img),
+            id(btn4_img), id(btn5_img), id(btn6_img), id(btn7_img)
+          };
+
+          for (int x = 0; x < 8; x++) {
+            int icon_index = id(radio_subpage) * 8 + x;
+
+            if (icon_index >= id(radio_count)) {
+              // nincs már ennyi rádió → gomb elrejtése
+              lv_obj_add_flag(btns[x], LV_OBJ_FLAG_HIDDEN);
+              continue;
+            }
+
+            lv_obj_clear_flag(btns[x], LV_OBJ_FLAG_HIDDEN);
+
+            // online_image → LVGL image descriptor pointer
+            auto img_ptr = id(radio_icons)[icon_index]->get_lv_img_dsc();
+            lv_img_set_src(imgs[x], img_ptr);
+          }
+
+
+
+  - id: init_radio_icons
+    mode: single
+    then:
+      - lambda: |-
+          id(radio_icons)[0] = id(radio_icon_0);
+          id(radio_icons)[1] = id(radio_icon_1);
+          id(radio_icons)[2] = id(radio_icon_2);
+          id(radio_icons)[3] = id(radio_icon_3);
+          id(radio_icons)[4] = id(radio_icon_4);
+          id(radio_icons)[5] = id(radio_icon_5);
+          id(radio_icons)[6] = id(radio_icon_6);
+          id(radio_icons)[7] = id(radio_icon_7);
+          id(radio_icons)[8] = id(radio_icon_8);
+          id(radio_icons)[9] = id(radio_icon_9);
+          id(radio_icons)[10] = id(radio_icon_10);
+          id(radio_icons)[11] = id(radio_icon_11);
+          id(radio_icons)[12] = id(radio_icon_12);
+          id(radio_icons)[13] = id(radio_icon_13);
+          id(radio_icons)[14] = id(radio_icon_14);
+          id(radio_icons)[15] = id(radio_icon_15);
+          id(radio_icons)[16] = id(radio_icon_16);
+          id(radio_icons)[17] = id(radio_icon_17);
+          id(radio_icons)[18] = id(radio_icon_18);
+          id(radio_icons)[19] = id(radio_icon_19);
+          id(radio_icons)[20] = id(radio_icon_20);
+          id(radio_icons)[21] = id(radio_icon_21);
+          id(radio_icons)[22] = id(radio_icon_22);
+          id(radio_icons)[23] = id(radio_icon_23);
+
+  - id: refresh_radios
+    mode: single        # FONTOS! Egyszer fusson, ne restartoljon!
+    then:
+      - lambda: |-
+          if (id(radios_fetched)) {
+            ESP_LOGI("RADIO", "refresh_radios skipped – radios already fetched");
+            return;
+          }
+          ESP_LOGI("RADIO", "UI → MA radio_list update triggered…");
+
+      - while:
+          condition:
+            lambda: "return !id(already_fetched);"
+          then:
+            - logger.log: "UI → Fetching radios from HA (pyscript)..."
+            - homeassistant.service:
+                service: pyscript.get_ma_radios
+            - delay: 5s
+            - lvgl.label.update:
+                id: boot_label
+                text: "Radios fetched..."
+
+      - lambda: |-
+          ESP_LOGI("RADIO", "Radio list fetch completed.");
+          id(radios_fetched) = true;
+
+  - id: all_icons_downloaded
+    mode: single
+    then:
+      - lambda: |-
+          ESP_LOGI("RADIO", "All icons are ready!");
+          id(icons_downloaded) = true;
+      - script.execute: init_radio_icons
+      - script.execute: calc_max_subpage
+      - script.execute: update_radio_icons
+      - lvgl.page.show: main_page
+      - lambda: |-
+          id(ui_ready) = true;
+      - light.turn_off: led
+      - micro_wake_word.start: # ASSIST START!!!!!!
+      - lvgl.label.update:
+          id: ww_status
+          text: "\U000F07C5"
+
+         
+
+  - id: time_update
+    then:
+      - lvgl.label.update:
+          id: lbl_time
+          text: !lambda |-
+             return id(ha_time).now().strftime("%H:%M");
+
+      - lvgl.label.update:    
+          id: lbl_date
+          text: !lambda |-
+             return id(ha_time).now().strftime("%Y/%m/%d");
+
+      - lvgl.label.update:
+          id: lbl_temp
+          text: !lambda |-
+            if (id(ha_temp).has_state()) {
+              return (id(ha_temp).state + " °C");
+            } else {
+              return std::string("-- °C");
+            }
+
+      - lvgl.label.update:
+          id: lbl_hum
+          text: !lambda |-
+            if (id(ha_hum).has_state()) {
+              return (id(ha_hum).state + " %");
+            } else {
+              return std::string("-- %");
+            }               
+                              
+      - logger.log: "update Time script ran"       
+
+  - id: icon_download_step
+    mode: single
+    then:
+      - lambda: |-
+          id(icon_count)++;
+          ESP_LOGI("ICON", "Icon downloaded (%d/%d)", id(icon_count), id(icon_total));
+
+          id(current_icon_download)++;
+
+          if (id(current_icon_download) < id(icon_total)) {
+            ESP_LOGI("ICON", "Starting next icon: %d", id(current_icon_download));
+
+            switch (id(current_icon_download)) {
+              case 0:  id(radio_icon_0).update(); break;
+              case 1:  id(radio_icon_1).update(); break;
+              case 2:  id(radio_icon_2).update(); break;
+              case 3:  id(radio_icon_3).update(); break;
+              case 4:  id(radio_icon_4).update(); break;
+
+              case 5:  id(radio_icon_5).update(); break;
+              case 6:  id(radio_icon_6).update(); break;
+              case 7:  id(radio_icon_7).update(); break;
+              case 8:  id(radio_icon_8).update(); break;
+              case 9:  id(radio_icon_9).update(); break;
+
+              case 10: id(radio_icon_10).update(); break;
+              case 11: id(radio_icon_11).update(); break;
+              case 12: id(radio_icon_12).update(); break;
+              case 13: id(radio_icon_13).update(); break;
+              case 14: id(radio_icon_14).update(); break;
+
+              case 15: id(radio_icon_15).update(); break;
+              case 16: id(radio_icon_16).update(); break;
+              case 17: id(radio_icon_17).update(); break;
+              case 18: id(radio_icon_18).update(); break;
+              case 19: id(radio_icon_19).update(); break;
+
+              case 20: id(radio_icon_20).update(); break;
+              case 21: id(radio_icon_21).update(); break;
+              case 22: id(radio_icon_22).update(); break;
+              case 23: id(radio_icon_23).update(); break;
+            }
+          } else {
+            id(icons_downloaded) = true;
+            ESP_LOGI("ICON", "All icons downloaded!");
+            id(all_icons_downloaded).execute();
+          }
+
+  - id: start_wake_word
+    mode: queued
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: voice_enabled
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+                    id: speaker_media_player_id
+          then:
+            - logger.log: "Wake word ON (script)"
+            - micro_wake_word.start
+            - lvgl.label.update:
+                id: ww_status
+                text: "\U000F07C5"
+
+  - id: stop_wake_word
+    mode: queued
+    then:
+      - logger.log: "Wake word OFF (script)"
+      - micro_wake_word.stop
+      - lvgl.label.update:
+          id: ww_status
+          text: "\U000F0A45"
+
+  - id: update_player_icon
+    then:
+      - lambda: |-
+          if (id(player_source) == 1) {
+            lv_img_set_src(
+              id(player_icon),
+              id(radio_icons)[id(current_radio_index)]
+            );
+          } else if (id(player_source) == 2) {
+            lv_img_set_src(
+              id(player_icon),
+              id(album_cover)
+            );
+          } else if (id(player_source) == 3) {
+            lv_img_set_src(
+              id(player_icon),
+              id(album_cover)
+            );                            
+          }
+  
+  - id: cover_kick
+    mode: single
+    then:
+      - lambda: |-
+          ESP_LOGI("COVER", "Cover download started");    
+          if (id(cover_busy)) return;
+          if (id(cover_pending_url).empty()) return;
+          ESP_LOGI("COVER", "Cover download started");    
+          id(cover_busy) = true;
+
+          std::string url = id(cover_pending_url);
+          id(cover_pending_url).clear();
+
+          ESP_LOGI("COVER", "Starting download: %s", url.c_str());
+          id(album_cover).release();
+          id(album_cover).set_url(url.c_str());
+          id(album_cover).update();
+          lv_img_set_src(
+              id(player_icon),
+              id(album_cover)
+          );
+
+
+
+  
