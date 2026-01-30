@@ -23,3 +23,15 @@ Hardver:
 - 4W speaker
 
 ![Music Assistant Satelite](/SCHEMATIC/circuit_image.png)
+
+1, Home Assistant oldali előkészületek:
+
+icon_worker.py
+Feladata a rádió ikonok előállítása és tárolása a /config/www/icons könyvtárba amit az ESP képes olvasni.
+Az ikonok 64x64 méretre vannak normalizálva, jpg formátumra. Az icon_worker képes a nem négyzetes ikonoknak, vagy hiányzó ikonoknak egyszerü saját ikont generálni. Azért kerül külön modulba, hogy aszinkron hívható legyen - igy nem akasztja meg a HA működését. A scriptet a config/python_modules könyvtárba kell betenni (ha nincs elötte létre kell hozni) és utána teljes HA restart hogy a modul késöbbiekben használható legyen.
+
+ma_get_radios.py
+Feladata: olvassa a Music Assisstant könyvtárát és onnan kiszedi a kedvencnek beállított rádiókat. (max 24db képes kezelni)
+A kiolvasott rádiók MA url-jét és a rádió ikon url-jét betárolja a sensor.radiok -ba (url, név, ikon url)
+A függvényt minden HA restart, update, MA restart után kötelező meghívni különben az ESP nem kap adatot!
+
