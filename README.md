@@ -37,3 +37,11 @@ Feladata: olvassa a Music Assisstant könyvtárát és onnan kiszedi a kedvencne
 A kiolvasott rádiók MA url-jét és a rádió ikon url-jét betárolja a sensor.radiok -ba (url, név, ikon url)
 A függvényt minden HA restart, update, MA restart után kötelező meghívni különben az ESP nem kap adatot!
 
+
+
+
+További bővítési lehetőségek: 
+-  MA YT musik kedvencek kezelése, dinamikus ikonok megjelenítésével (folyamatban)
+-  több képernyős kezdőoldal több HA entitással  
+-  MAX98375 helyet 2db MAX98375A használatával stereo player
+
