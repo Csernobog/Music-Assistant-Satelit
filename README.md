@@ -16,11 +16,10 @@ https://github.com/AshaiRey/ESP-Assistant/blob/main/ESP%20Assistant%20v4.yaml
 ![Music Assistant Satelite](/Picture/pic1.jpg)
 
 Hardver:
-
-ESP32S3 N16R8 Wroom-1
-MAX98375 speaker DAC
-INMP441  mic
-2.8" 240x320 SPI TFT érintőképernyő (Ili9341 driverrel) SD kártya csatlakozó nincs használva
-4W speaker
+- ESP32S3 N16R8 Wroom-1
+- MAX98375 speaker DAC
+- INMP441  mic
+- 2.8" 240x320 SPI TFT érintőképernyő (Ili9341 driverrel) SD kártya csatlakozó nincs használva
+- 4W speaker
 
 ![Music Assistant Satelite](/SCHEMATIC/circuit_image.png)
