@@ -267,7 +267,7 @@ display:
     reset_pin: GPIO11
     spi_id: spi_bus1
     data_rate: 10MHz
-    rotation: 270               # Fekvő mód ✔
+    #rotation: 270               # Fekvő mód ✔
     dimensions:
       width: 240
       height: 320
@@ -287,7 +287,7 @@ touchscreen:
       y_min: 340
       y_max: 3860
     transform:
-      swap_xy: true
+      mirror_y: true
     threshold: 900
 
     cs_pin: GPIO17
@@ -1994,6 +1994,7 @@ font:
 #   LVGL UI Init
 # ============================
 lvgl:
+  rotation: 270
   disp_bg_color: black
   buffer_size: 25%
   displays:
@@ -3552,7 +3553,7 @@ script:
             lv_obj_clear_flag(btns[x], LV_OBJ_FLAG_HIDDEN);
 
             // online_image → LVGL image descriptor pointer
-            auto img_ptr = id(radio_icons)[icon_index]->get_lv_img_dsc();
+            auto img_ptr = id(radio_icons)[icon_index]->get_lv_image_dsc();
             lv_img_set_src(imgs[x], img_ptr);
           }
 
